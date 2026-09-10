@@ -33,7 +33,7 @@ for shard in 00001-of-00002 00002-of-00002; do
     f="$MODEL_DIR/${GGUF_BASE}-${shard}.gguf"
     if [ ! -s "$f" ]; then
         echo "==> Downloading ${GGUF_BASE}-${shard}.gguf ..."
-        huggingface-cli download "$GGUF_REPO" "${GGUF_BASE}-${shard}.gguf" \
+        hf download "$GGUF_REPO" "${GGUF_BASE}-${shard}.gguf" \
             --local-dir "$MODEL_DIR"
     fi
 done
@@ -43,9 +43,12 @@ if [ ! -x "$VENV/bin/python" ]; then
     python3 -m venv "$VENV"
 fi
 "$VENV/bin/pip" install --upgrade pip wheel -q
-"$VENV/bin/pip" install "torch==2.7.1+cu126" "torchaudio==2.7.1+cu126" \
-    --index-url https://download.pytorch.org/whl/cu126
+# NOTE: cu126 wheels lack Blackwell (sm_120) kernels ("no kernel image available on
+# the device" at load time on RTX PRO 6000 Blackwell). Use the default PyPI wheels
+# instead, which ship a current cu13x build with Blackwell support.
+"$VENV/bin/pip" install -U torch torchaudio
 "$VENV/bin/pip" install "qwen-tts==0.1.1"
+"$VENV/bin/pip" install hf_transfer
 
 # 4. System deps for qwen-tts (libsox)
 if ! command -v sox >/dev/null 2>&1; then

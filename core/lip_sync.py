@@ -108,7 +108,7 @@ def get_closest_aspect_ratio(aspect_ratio):
     return target_ratios[closest_idx]
 
 
-def read_image(image_path, image_size=None, max_image_area=262144):
+def read_image(image_path, image_size=None, max_image_area=16384):
     image = Image.open(image_path).convert("RGB")
     img_W, img_H = image.size
     area = img_H * img_W
@@ -467,6 +467,15 @@ class LipSyncManager:
         try:
             self.frame_count = 1
             self.service_running.set()
+
+            # The causal VAE decoder (cached_decode) carries feature-map state
+            # across calls to stay temporally consistent within one stream. It
+            # is only ever cleared once, at process construction (WanVAE_.__init__),
+            # so without an explicit reset here every stream after the first
+            # starts decoding from cache left over by the previous stream's
+            # unrelated content, producing visible flicker/artifacts in the
+            # opening frames of each new session.
+            self.vae.model.clear_cache()
 
             await self.send_frame(
                 frame_data={

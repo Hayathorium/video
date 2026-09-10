@@ -891,17 +891,23 @@
 
             const videoDisplay = document.getElementById('videoDisplay');
             const currentTimeStr = new Date().toLocaleTimeString();
-            videoDisplay.innerHTML = `<img src="data:image/jpeg;base64,${frameToDisplay.image}" alt="Frame #${frameToDisplay.frameNumber} at ${currentTimeStr}">`;
 
-            const img = videoDisplay.querySelector('img');
-            if (img) {
-                img.onload = function() {
-                    console.log(`Frame #${frameToDisplay.frameNumber} loaded successfully`);
-                };
+            // Reuse a single persistent <img> and just update its src. Replacing
+            // videoDisplay's innerHTML every frame (as before) tears down and
+            // recreates the <img> element each time, leaving a blank gap between
+            // frames at 16fps that reads as flicker. Updating .src on the same
+            // element instead lets the browser swap the bitmap in place.
+            let img = videoDisplay.querySelector('img');
+            if (!img) {
+                videoDisplay.innerHTML = '';
+                img = document.createElement('img');
+                videoDisplay.appendChild(img);
                 img.onerror = function() {
                     console.error(`Failed to load frame #${frameToDisplay.frameNumber}`);
                 };
             }
+            img.alt = `Frame #${frameToDisplay.frameNumber} at ${currentTimeStr}`;
+            img.src = `data:image/jpeg;base64,${frameToDisplay.image}`;
 
             lastFrameTime = currentTime;
         }

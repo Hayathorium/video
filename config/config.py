@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from omegaconf import OmegaConf
 
-PATH_TO_YOUR_MODEL = "/workspace/RealVideo/model.pt"  # Local checkpoint (downloaded from zai-org/RealVideo)
+PATH_TO_YOUR_MODEL = "/workspace/video/model.pt"  # Local checkpoint (downloaded from zai-org/RealVideo)
 
 
 @dataclass
