@@ -1,11 +1,13 @@
 import asyncio
+import base64
 import logging
-import os
 import re
 import time
 
 import aiohttp
 import orjson
+
+from config.config import config as service_config
 
 logger = logging.getLogger(__name__)
 
@@ -14,22 +16,27 @@ class TTSPipeline:
     def __init__(
         self,
         vae_idle_event: asyncio.Event,
-        model_name_llm="glm-4.5-airx",
-        model_name_tts="glm-tts",
+        model_name_llm=None,
+        model_name_tts=None,
     ):
         self.vae_idle_event = vae_idle_event
 
-        self.model_name_llm = model_name_llm
-        self.model_name_tts = model_name_tts
+        # Local speech config (llama.cpp LLM + vLLM-Omni Qwen3-TTS).
+        self.llm_server_url = service_config.speech.llm_server_url.rstrip("/")
+        self.tts_server_url = service_config.speech.tts_server_url.rstrip("/")
+        self.model_name_llm = model_name_llm or service_config.speech.llm_model
+        self.model_name_tts = model_name_tts or service_config.speech.tts_model
+        self.tts_sample_rate = service_config.speech.tts_sample_rate
+        self.tts_voices = service_config.speech.tts_voices
+
         self.stc_split_pattern = r"([。？！?!\n]”?|[.?!]\s?)"
         self.substc_split_pattern = "(，|, )"
         self.stc_min_length = 10
         self.stc_max_length = 50
         self.chat_history = []
         self.async_tasks_started = False
-        self.proxy = os.environ.get("HTTP_PROXY", None) or os.environ.get(
-            "http_proxy", None
-        )
+        # Localhost services must bypass any HTTP(S)_PROXY env var.
+        self.proxy = None
         self.llm_task = None
         self.tts_task = None
 
@@ -51,21 +58,17 @@ class TTSPipeline:
             logger.info("LLM & TTS tasks created")
 
     async def llm_worker_async(self, text_input_queue: asyncio.Queue, sentence_queue):
-        headers = {
-            "Authorization": f"Bearer {os.environ['ZAI_API_KEY']}",
-            "Content-Type": "application/json",
-        }
-        llm_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        # llama.cpp `llama-server` exposes an OpenAI-compatible /v1/chat/completions.
+        llm_url = f"{self.llm_server_url}/chat/completions"
         body_template = {
             "model": self.model_name_llm,
             "max_tokens": 1024,
             "temperature": 0.7,
             "top_p": 0.9,
             "stream": True,
-            "thinking": {"type": "disabled"},
         }
 
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(total=None)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             while True:
                 try:
@@ -93,7 +96,7 @@ class TTSPipeline:
 
                     logger.info(f"Creating LLM stream response for input: {text_input}")
                     async with session.post(
-                        llm_url, headers=headers, json=body, proxy=self.proxy
+                        llm_url, json=body, proxy=self.proxy
                     ) as response:
                         logger.info(
                             "LLM stream response for input %s created, %.3fms elapsed"
@@ -134,15 +137,17 @@ class TTSPipeline:
                                 await asyncio.sleep(0)
                                 await self.vae_idle_event.wait()
                                 chunk = orjson.loads(
-                                    bline[6:].strip()
-                                )  # remove 'data: '
+                                    bline[5:].strip()
+                                )  # remove 'data:'
 
                                 finished = chunk["choices"][0].get("finish_reason", "")
                                 if finished == "stop" or finished == "stop_sequence":
                                     break
 
-                                if chunk["choices"][0]["delta"]["content"]:
-                                    text_chunk = chunk["choices"][0]["delta"]["content"]
+                                delta = chunk["choices"][0].get("delta", {})
+                                content = delta.get("content")
+                                if content:
+                                    text_chunk = content
                                     text_buffer += text_chunk
 
                                     while True:
@@ -198,47 +203,46 @@ class TTSPipeline:
     async def tts_worker_async(
         self, sentence_queue: asyncio.Queue, output_queue: asyncio.Queue
     ):
-        headers = {
-            "Authorization": f"Bearer {os.environ['ZAI_API_KEY']}",
-            "Content-Type": "application/json",
-        }
-        timeout = aiohttp.ClientTimeout(total=10)
+        # vLLM-Omni `vllm serve ... --omni` exposes an OpenAI-compatible
+        # /v1/audio/speech. With `stream: true` + `response_format: "pcm"` it
+        # streams raw 16-bit signed little-endian mono PCM (no SSE envelope).
+        tts_url = f"{self.tts_server_url}/audio/speech"
+        timeout = aiohttp.ClientTimeout(total=None)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
             while True:
                 try:
                     sentence_item = await sentence_queue.get()
                     if sentence_item is None:  # llm response finish
-                        logger.info("TTS %s done" % str(sentence))
                         await output_queue.put(None)
                         continue
 
                     sentence = sentence_item.get("sentence", None)
                     voice_id = sentence_item.get("voice_id", None)
-                    logger.info(f"TTS processing: {sentence_item}")
+                    if not sentence:
+                        continue
+
+                    # Map the frontend voice id straight through to a
+                    # Qwen3-TTS CustomVoice name (e.g. "vivian").
+                    voice = voice_id if voice_id in self.tts_voices else self.tts_voices[0]
+                    logger.info(f"TTS processing: {sentence_item} (voice={voice})")
 
                     body = {
+                        "model": self.model_name_tts,
                         "input": sentence,
-                        "stream": True,
-                        "model": "glm-tts",
-                        "voice": voice_id,
+                        "voice": voice,
+                        "language": "Auto",
                         "response_format": "pcm",
-                        "speed": 1.0,
-                        "volume": 1.0,
+                        "stream": True,
                     }
-                    tts_url = "https://open.bigmodel.cn/api/paas/v4/audio/speech"
 
-                    buffer = b""
-                    chunk_id = -1
-                    finished = False
-                    chunk_resp_list = []
-                    chunk_resp_list_length = 0
-
+                    chunk_id = 0
                     start = time.time()
                     logger.info(f"Creating TTS stream for sentence: {sentence}")
                     async with session.post(
-                        tts_url, headers=headers, json=body, proxy=self.proxy
+                        tts_url, json=body, proxy=self.proxy
                     ) as response:
+                        response.raise_for_status()
                         logger.info(
                             "TTS stream response for %s created, %.3fms elapsed"
                             % (sentence, 1000 * (time.time() - start))
@@ -247,73 +251,25 @@ class TTSPipeline:
                         while True:
                             await asyncio.sleep(0)
                             await self.vae_idle_event.wait()
-                            chunk_resp = await response.content.read(1024)
-
-                            await asyncio.sleep(0)
-                            await self.vae_idle_event.wait()
-
-                            pos = chunk_resp.find(b"\n")
-                            if pos > -1:
-                                pos += chunk_resp_list_length
-
-                            chunk_resp_list.append(chunk_resp)
-                            chunk_resp_list_length += len(chunk_resp)
-                            if chunk_resp_list_length == 0:
+                            pcm_chunk = await response.content.read(4096)
+                            if not pcm_chunk:
                                 break
 
-                            if pos == -1 and not chunk_resp:
-                                pos = chunk_resp_list_length
-
-                            while pos > -1:
-                                await asyncio.sleep(0)
-                                await self.vae_idle_event.wait()
-                                buffer = b"".join(chunk_resp_list)
-
-                                bline = buffer[: pos + 1]
-                                buffer = buffer[pos + 1 :]
-                                chunk_resp_list = [buffer]
-                                chunk_resp_list_length = len(buffer)
-                                pos = buffer.find(b"\n")
-                                chunk_id += 1
-
-                                logger.info("Processing audio chunk %d" % chunk_id)
-
-                                await asyncio.sleep(0)
-                                await self.vae_idle_event.wait()
-                                bline = bline.strip()
-                                if not bline:
-                                    break
-
-                                if not bline or not bline.startswith(b"data:"):
-                                    continue
-
-                                await asyncio.sleep(0)
-                                await self.vae_idle_event.wait()
-                                chunk = orjson.loads(bline[5:])  # remove 'data:'
-
-                                choice = chunk["choices"][0]
-                                index = choice["index"]
-                                is_finished = choice.get("finish_reason", "")
-                                if is_finished == "stop":
-                                    finished = True
-                                    break
-                                audio_delta = choice["delta"]["content"]
-                                sr = choice["delta"]["return_sample_rate"]
-
-                                logger.info(
-                                    f"TTS stream: {index}.audio_delta={audio_delta[:64]}..., length={len(audio_delta)}"
-                                )
-                                await output_queue.put(
-                                    {
-                                        "audio_base64": audio_delta,
-                                        "sample_rate": sr,
-                                        "chunk_id": chunk_id,
-                                        "time": time.time(),
-                                    }
-                                )
-
-                            if finished:
-                                break
+                            logger.info(
+                                "Processing audio chunk %d (bytes=%d)"
+                                % (chunk_id, len(pcm_chunk))
+                            )
+                            await output_queue.put(
+                                {
+                                    "audio_base64": base64.b64encode(
+                                        pcm_chunk
+                                    ).decode("ascii"),
+                                    "sample_rate": self.tts_sample_rate,
+                                    "chunk_id": chunk_id,
+                                    "time": time.time(),
+                                }
+                            )
+                            chunk_id += 1
 
                 except Exception as e:
                     logger.exception(f"Exception in TTS worker: {e}")

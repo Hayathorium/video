@@ -184,3 +184,13 @@ cython_debug/
 .idea/*
 
 __pycache__/
+
+# --- Local LLM/TTS mode: generated/downloaded artifacts (do not commit) ---
+.venv_tts/
+llama.cpp/
+models/
+wan_models/
+model.pt
+.inductor_cache/
+uploads/
+logs/

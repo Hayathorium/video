@@ -1,84 +1,104 @@
-# RealVideo
+# RealVideo — Local LLM + TTS
 
-RealVideo is a WebSocket-based video calling system that supports text input. It leverages **GLM-4.5-AirX** and 
-**GLM-TTS** models to generate audio responses and utilizes autoregressive diffusion to generate corresponding 
-video frames. The system features a modular design with full functionality and a clean code structure.
-Visit [blog](https://z.ai/blog/realvideo) here!
+RealVideo is a WebSocket-based video calling system that takes text input, generates an audio
+response, and uses autoregressive diffusion to produce a real-time lip-synced video. The system is
+modular with a clean code structure.
 
-## Example Video
+This fork replaces the cloud **ZAI API** (`GLM-4.5-AirX` + `GLM-TTS`) with **fully local** inference,
+so no API key is required:
 
+- **LLM**: [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` running
+  `Qwen2.5-7B-Instruct` (GGUF).
+- **TTS**: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (0.6B CustomVoice) served by the
+  [`qwen-tts`](https://pypi.org/project/qwen-tts/) package.
 
-<table border="0" style="width: 100%; text-align: left; margin-top: 20px;">
-  <tr>
-      <td>
-          <video src="https://github.com/user-attachments/assets/4353a47f-32db-4f07-af68-c7cf4eb9b7ec" width="100%" controls autoplay loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/13a674d7-9d2b-4979-be00-3ba37664252d" width="100%" controls autoplay loop></video>
-      </td>
-      <td>
-          <video src="https://github.com/user-attachments/assets/e8e02325-5e63-4bfe-8ffc-c319cea5fe21" width="100%" controls autoplay loop></video>
-      </td>
-  </tr>
-</table>
+## Architecture
 
-## Features
+Three processes run together (orchestrated by `scripts/run_local.sh`):
 
-- **Text Input**: Supports text message input.
-- **AI Voice Response**: Integrates GLM-4.5-AirX and GLM-TTS models to generate voice responses.
-- **Lip Sync**: Generates real-time conversational video based on any input image and audio.
-- **Real-time Communication**: WebSocket-based real-time bidirectional communication.
+| Service | Tool | Port | Model |
+|---|---|---|---|
+| LLM | `llama-server` (OpenAI-compatible) | 8080 | `Qwen2.5-7B-Instruct` Q4_K_M GGUF |
+| TTS | `qwen-tts` FastAPI wrapper | 8091 | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` |
+| App | `torchrun app.py` (DiT + VAE) | 8003 | `Wan2.2-S2V-14B` |
 
-## Download
+The app itself still uses two GPUs: one for the VAE service, the rest for parallel DiT inference.
+The LLM and TTS servers are pinned to GPU 0.
 
-| Model                        | Download Links                                                                                                                                                       |
-|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|    RealVideo          | [🤗 Hugging Face](https://huggingface.co/zai-org/RealVideo)<br>[🤖 ModelScope](https://modelscope.cn/models/ZhipuAI/RealVideo)                           |
+## Requirements
+
+- **2+ GPUs**, ≥80 GB each (e.g. H100 / H200), with NVLink.
+- Python 3.10–3.12, `pip3`.
+- CUDA driver (tested on 570.x, i.e. CUDA 12.8).
+- A modern browser (WebSocket + Web Audio API).
+- `sox`/`libsox-dev` (installed automatically by `setup_local.sh`).
+
+> **Note on vLLM**: this repo deliberately does **not** use vLLM-Omni for TTS. vLLM 0.28.x wheels
+> only ship `cu129`/`cu130` builds, which require a CUDA ≥12.9 driver; on a 570.x (CUDA 12.8) driver
+> they fail with "driver too old". `qwen-tts` runs the same model without vLLM.
 
 ## Quick Start
 
-### 1. Requirements
+### 1. Download the lip-sync model
 
-- Python 3.10 - 3.12
-- pip3
-- Modern browser (supporting WebSocket and Web Audio API)
+```bash
+huggingface-cli download Wan-AI/Wan2.2-S2V-14B --local-dir-use-symlinks False --local-dir wan_models/Wan2.2-S2V-14B
+huggingface-cli download zai-org/RealVideo model.pt --local-dir .
+```
 
-### 2. Install Dependencies
+Then set the checkpoint path in `config/config.py`:
+
+```python
+PATH_TO_YOUR_MODEL = "model.pt"  # or the absolute path to your checkpoint
+```
+
+### 2. Install dependencies
 
 ```bash
 pip3 install -r requirements.txt
-huggingface-cli download Wan-AI/Wan2.2-S2V-14B --local-dir-use-symlinks False --local-dir wan_models/Wan2.2-S2V-14B
 ```
 
-### 3. Configure API Key
+### 3. One-time local LLM/TTS setup
 
-Before using, please set the ZAI API key:
+Builds llama.cpp, downloads the Qwen2.5-7B GGUF, and creates `.venv_tts` with `qwen-tts`:
 
 ```bash
-export ZAI_API_KEY="your_actual_api_key_here"
+bash scripts/setup_local.sh
 ```
 
-and change `config/config.py` line:
+The `Qwen3-TTS-12Hz-0.6B-CustomVoice` model is downloaded automatically on first TTS serve.
 
-```python
-PATH_TO_YOUR_MODEL = "zai-org/RealVideo/model.pt"  # Replace with your model path
-```
-
-### 4. Start the Service
-
-Specify the number of GPUs you wish to use and run the startup script, at least 2 GPUs (per 80GB, such as H100, H200).
-
-For example:
+### 4. Start the service
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 bash ./scripts/run_app.sh
+bash scripts/run_local.sh
 ```
 
-One GPU will be used for the VAE service, while the remaining GPUs will be automatically allocated for parallel
-computation of the DiT service.
+This launches the LLM server (port 8080), the TTS server (port 8091), waits for both to become
+healthy, then starts the app on port 8003. To select specific GPUs, prefix with
+`CUDA_VISIBLE_DEVICES=0,1`.
 
-The table below shows reference times (in ms) for DiT to generate one block. If the time is within **500ms**, smooth
-real-time generation can be achieved. Numbers in parentheses indicate the time taken with compilation enabled.
+### 5. Access the application
+
+Open **http://localhost:8003**.
+
+## Usage
+
+1. **Set avatar**: upload an image (or keep the default `resources/cat.png`).
+2. **Connect**: click "Connect" to open the WebSocket.
+3. **Send a message**: type text and press Enter / click "Send".
+4. **Watch the reply**: the lip-synced video response plays on the left.
+
+## Voices
+
+The local TTS uses the predefined Qwen3-TTS CustomVoice set (voice cloning is not supported in this
+mode): `vivian`, `ryan`, `aiden`, `dylan`, `eric`, `ono_anna`, `serena`, `sohee`, `uncle_fu`.
+
+## Reference timing
+
+The table below shows reference times (in ms) for the DiT to generate one block. Within **500 ms**,
+smooth real-time generation is achievable. Numbers in parentheses indicate the time with compilation
+enabled.
 
 | DiT sp size / Denoising steps | 2                         | 4                     |
 |-------------------------------|---------------------------|-----------------------|
@@ -86,27 +106,21 @@ real-time generation can be achieved. Numbers in parentheses indicate the time t
 | 2                             | **384.86 ms**             | 655.92 ms (527.11 ms) |
 | 4                             | **306.39 ms**             | 513.72 ms (**480.68 ms**) |
 
-### 5. Access the Application
+## Notes
 
-- **Main Page**: http://localhost:8003
-
-## Usage Instructions
-
-1. **Set Avatar and Voice**: Use the file upload button to upload an image to set the avatar, or upload a speech audio
-   file longer than 3 seconds for voice cloning.
-2. **Connect WebSocket**: Click the "Connect" button to establish the WebSocket connection.
-3. **Text Input**: Enter a message in the text box and press Enter or click "Send" to send the message.
-4. **Real-time Response**: The real-time generated video response will be displayed on the left.
-
-## Technical Highlights
-
-- **Model Integration**: Allows for convenient and quick voice cloning, taking text input to generate audio output.
-- **Modular Design**: Clear code structure, easy to maintain and extend.
-- **Real-time Performance**: Optimized audio processing and real-time video generation algorithms.
+- Only **one** WebSocket client can connect at a time; a second connection is rejected until the
+  first closes.
+- The WebSocket handshake requires an `image_config` message (the reference image) before any
+  `text`/`audio` message, otherwise the DiT never starts generating.
+- `scripts/ws_test.py` is a headless smoke-test client that exercises the full
+  text → LLM → TTS → lip-sync pipeline.
 
 ## Acknowledgements
 
-This project utilizes the following open-source libraries:
+This project utilizes the following open-source libraries and models:
 
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)
+- [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) / [`qwen-tts`](https://pypi.org/project/qwen-tts/)
 - [self forcing](https://github.com/guandeh17/Self-Forcing)
 - [Wan2.2-S2V](https://github.com/Wan-Video/Wan2.2)
+- [RealVideo](https://github.com/zai-org/RealVideo)

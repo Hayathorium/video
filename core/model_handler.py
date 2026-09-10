@@ -5,6 +5,7 @@ import time
 import traceback
 from typing import Any, Optional
 
+import numpy as np
 import torch
 import torchaudio
 
@@ -120,10 +121,15 @@ class ModelHandler:
 
                     await asyncio.sleep(0)
                     await self.vae_idle_event.wait()
-                    current_audio, sr = torchaudio.load(
-                        current_audio_bytes, format="s16le"
+                    # Local TTS streams raw 16-bit signed mono PCM. Decode it
+                    # directly (torchaudio.load with format="s16le" is rejected
+                    # by the soundfile backend: "Format not recognised").
+                    pcm = np.frombuffer(current_audio_bytes, dtype=np.int16)
+                    current_audio = (
+                        torch.from_numpy(pcm.astype(np.float32) / 32768.0)
+                        .unsqueeze(0)
+                        .to("cuda")
                     )
-                    current_audio = current_audio.to("cuda")
 
                     await asyncio.sleep(0)
                     await self.vae_idle_event.wait()

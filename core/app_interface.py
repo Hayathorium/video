@@ -26,7 +26,7 @@ from config.config import config
 
 from .connection import ConnectionManager
 from .model_handler import ModelHandler
-from .voice_clone import clone, get_voice_list, upload_audio_file
+from .voice_clone import get_voice_list
 
 
 class RealVideoApp:
@@ -141,20 +141,13 @@ class RealVideoApp:
                 f.write(contents)
             logger.info(f"{file_path} saved")
 
-            try:
-                file_id = upload_audio_file(file_path)
-                logger.info(f"file uploaded: {file_id}")
-                clone_ret = clone(file_id, voice_name)
-                logger.info(f"voice clone finished")
-
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Error: {e}")
-
+            # Voice cloning is not supported in local (Qwen3-TTS CustomVoice)
+            # mode — return the predefined voice list instead.
             voice_list = get_voice_list()
             return JSONResponse(
                 {
                     "success": True,
-                    "message": "Voice clone succeeded.",
+                    "message": "Voice cloning unavailable in local mode; using predefined voices.",
                     "voice_list": voice_list,
                 }
             )

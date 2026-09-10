@@ -1,0 +1,60 @@
+#! /bin/bash
+# One-time setup for running RealVideo fully locally (no ZAI cloud API):
+#   - builds llama.cpp `llama-server` (LLM)
+#   - downloads Qwen2.5-7B-Instruct Q4_K_M GGUF
+#   - creates .venv_tts with torch (CUDA 12.x) + `qwen-tts` (Qwen3-TTS)
+#
+# NOTE: TTS uses the `qwen-tts` package directly instead of vLLM-Omni. vLLM
+# 0.28.x wheels only ship cu129/cu130, but this machine's driver (570.x) tops
+# out at CUDA 12.8, so vLLM cannot run here.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LLAMA_DIR="llama.cpp"
+MODEL_DIR="models"
+VENV=".venv_tts"
+GGUF_BASE="qwen2.5-7b-instruct-q4_k_m"
+GGUF_REPO="Qwen/Qwen2.5-7B-Instruct-GGUF"
+
+# 1. llama.cpp
+if [ ! -x "$LLAMA_DIR/build/bin/llama-server" ]; then
+    echo "==> Building llama.cpp (CUDA) ..."
+    if [ ! -d "$LLAMA_DIR" ]; then
+        git clone https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
+    fi
+    cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" \
+        -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
+    cmake --build "$LLAMA_DIR/build" --target llama-server -j "$(nproc)"
+fi
+
+# 2. GGUF model (Q4_K_M, split into 2 shards)
+mkdir -p "$MODEL_DIR"
+for shard in 00001-of-00002 00002-of-00002; do
+    f="$MODEL_DIR/${GGUF_BASE}-${shard}.gguf"
+    if [ ! -s "$f" ]; then
+        echo "==> Downloading ${GGUF_BASE}-${shard}.gguf ..."
+        huggingface-cli download "$GGUF_REPO" "${GGUF_BASE}-${shard}.gguf" \
+            --local-dir "$MODEL_DIR"
+    fi
+done
+
+# 3. TTS venv (torch cu126 + qwen-tts)
+if [ ! -x "$VENV/bin/python" ]; then
+    python3 -m venv "$VENV"
+fi
+"$VENV/bin/pip" install --upgrade pip wheel -q
+"$VENV/bin/pip" install "torch==2.7.1+cu126" "torchaudio==2.7.1+cu126" \
+    --index-url https://download.pytorch.org/whl/cu126
+"$VENV/bin/pip" install "qwen-tts==0.1.1"
+
+# 4. System deps for qwen-tts (libsox)
+if ! command -v sox >/dev/null 2>&1; then
+    echo "==> Installing libsox (apt) ..."
+    apt-get update -y
+    apt-get install -y sox libsox-dev libsox-fmt-all
+fi
+
+echo "==> Setup complete."
+echo "    LLM server : $LLAMA_DIR/build/bin/llama-server"
+echo "    TTS server : $VENV/bin/python scripts/tts_server.py"
+echo "    Run        : bash scripts/run_local.sh"

@@ -20,15 +20,15 @@ export TORCHINDUCTOR_CACHE_DIR=./.inductor_cache
 export TORCHDYNAMO_VERBOSE=1
 export GPU_COUNT=$(get_gpu_count)
 
-export NCCL_PXN_DISABLE=0
-export NCCL_IB_GID_INDEX=3
-export NCCL_NET_GDR_LEVEL=4
-export NCCL_IB_RETRY_CNT=7
-export NCCL_IB_TIMEOUT=25
-export NCCL_IB_QPS_PER_CONNECTION=2
+# Single-node 2x H100 NVL: disable InfiniBand/PXN and use NVLink P2P only.
+export NCCL_IB_DISABLE=1
+export NCCL_PXN_DISABLE=1
+export NCCL_NET_GDR_LEVEL=0
 export NCCL_P2P_LEVEL=NVL
+# This environment's CUDA VMM API (cuMemCreate) returns INVALID_VALUE; disable NCCL's cuMem allocator.
+export NCCL_CUMEM_ENABLE=0
+export NCCL_CUMEM_HOST_ENABLE=0
 export NCCL_DEBUG=VERSION
-export NCCL_IB_TC=106
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:512"

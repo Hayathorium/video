@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from omegaconf import OmegaConf
 
-PATH_TO_YOUR_MODEL = "zai-org/RealVideo/model.pt"  # Replace with your model path
+PATH_TO_YOUR_MODEL = "/workspace/RealVideo/model.pt"  # Local checkpoint (downloaded from zai-org/RealVideo)
 
 
 @dataclass
@@ -27,9 +27,32 @@ class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8003
     diffusion_socket_port: int = 9090
-    app_socket_port: int = 9091
+    app_socket_port: int = 9094
     app_ready_socket_port: int = 9092
     diffusion_ready_socket_port: int = 9093
+
+
+@dataclass
+class LocalSpeechConfig:
+    # llama.cpp `llama-server` (OpenAI-compatible) — local LLM
+    llm_server_url: str = "http://127.0.0.1:8080/v1"
+    llm_model: str = "qwen2.5-7b-instruct"
+
+    # vLLM-Omni `vllm serve ... --omni` (OpenAI /v1/audio/speech) — local Qwen3-TTS
+    tts_server_url: str = "http://127.0.0.1:8091/v1"
+    tts_model: str = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    tts_sample_rate: int = 24000
+    tts_voices: tuple = (
+        "vivian",
+        "ryan",
+        "aiden",
+        "dylan",
+        "eric",
+        "ono_anna",
+        "serena",
+        "sohee",
+        "uncle_fu",
+    )
 
 
 @dataclass
@@ -66,12 +89,26 @@ class Config:
         self.video = VideoConfig()
         self.server = ServerConfig()
         self.lip_sync = LipSyncConfig()
+        self.speech = LocalSpeechConfig()
 
         self._load_from_env()
 
     def _load_from_env(self):
         self.api_key = os.getenv("ZHIPUAI_API_KEY")
         self.log_level = os.getenv("LOG_LEVEL", "DEBUG")
+
+        # Local LLM/TTS (llama.cpp + Qwen3-TTS) overrides
+        self.speech.llm_server_url = os.getenv(
+            "LLM_SERVER_URL", self.speech.llm_server_url
+        )
+        self.speech.llm_model = os.getenv("LLM_MODEL", self.speech.llm_model)
+        self.speech.tts_server_url = os.getenv(
+            "TTS_SERVER_URL", self.speech.tts_server_url
+        )
+        self.speech.tts_model = os.getenv("TTS_MODEL", self.speech.tts_model)
+        self.speech.tts_sample_rate = int(
+            os.getenv("TTS_SAMPLE_RATE", self.speech.tts_sample_rate)
+        )
         self.self_focing_config_path = os.getenv("CONFIG_PATH", "")
         self.audio_samples_per_video_block = round(
             self.audio.sample_rate
