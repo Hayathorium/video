@@ -62,7 +62,7 @@ class LipSyncConfig:
     s2v_segment_latent_length = 80
 
     self_forcing_config_path: str = (
-        "self_forcing/configs/sample_14B_s2v_sparse_nfb2.yaml"
+        "self_forcing/configs/sample_14B_s2v_sparse_nfb2_2steps.yaml"
     )
     # self_forcing_config_path: str = 'self_forcing/configs/sample_14B_s2v_sparse_nfb2_2steps.yaml'
 
