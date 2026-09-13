@@ -7,8 +7,9 @@ modular with a clean code structure.
 This fork replaces the cloud **ZAI API** (`GLM-4.5-AirX` + `GLM-TTS`) with **fully local** inference,
 so no API key is required:
 
-- **LLM**: [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` running
-  `Qwen2.5-7B-Instruct` (GGUF).
+- **LLM**: [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama` CLI (prebuilt binary,
+  installed via `https://llama.app/install.sh`), running `Qwen2.5-7B-Instruct` (GGUF) in
+  `llama serve` mode.
 - **TTS**: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (0.6B CustomVoice) served by the
   [`qwen-tts`](https://pypi.org/project/qwen-tts/) package.
 
@@ -18,7 +19,7 @@ Three processes run together (orchestrated by `scripts/run_local.sh`):
 
 | Service | Tool | Port | Model |
 |---|---|---|---|
-| LLM | `llama-server` (OpenAI-compatible) | 8080 | `Qwen2.5-7B-Instruct` Q4_K_M GGUF |
+| LLM | `llama serve` (OpenAI-compatible) | 8080 | `Qwen2.5-7B-Instruct` Q4_K_M GGUF |
 | TTS | `qwen-tts` FastAPI wrapper | 8091 | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` |
 | App | `torchrun app.py` (DiT + VAE) | 8003 | `Wan2.2-S2V-14B` |
 
@@ -31,9 +32,9 @@ The LLM and TTS servers are pinned to GPU 0.
 - Python 3.10–3.12, `pip3`.
 - CUDA driver (tested on 570.x/580.x, i.e. CUDA 12.8+).
 - A modern browser (WebSocket + Web Audio API).
-- `sox`/`libsox-dev`, `ninja-build`, `cmake` (`ninja-build` is needed for the
-  `llama.cpp` CUDA build in step 3; `sox`/`libsox-dev` are installed
-  automatically by `setup_local.sh`).
+- `sox`/`libsox-dev` (installed automatically by `setup_local.sh`). `llama.cpp`
+  itself is installed as a prebuilt binary (step 3), so no `cmake`/`ninja-build`
+  or CUDA toolchain is needed for it.
 - **flash-attn is required, not optional.** The TTS server prints "flash-attn
   is not installed, will only run the manual PyTorch version" and still
   works without it, but the main DiT model
@@ -76,14 +77,24 @@ instead (installed by `pip3 install huggingface_hub` /
 `requirements.txt`):
 
 ```bash
-hf download Wan-AI/Wan2.2-S2V-14B --local-dir wan_models/Wan2.2-S2V-14B
+hf download Wan-AI/Wan2.2-S2V-14B --local-dir wan_models/Wan2.2-S2V-14B \
+    --exclude "wav2vec2-large-xlsr-53-english/*" --exclude "diffusion_pytorch_model*.safetensors"
 hf download zai-org/RealVideo model.pt --local-dir .
 ```
 
 `Wan2.2-S2V-14B` also includes a `wav2vec2-large-xlsr-53-english/` folder;
 it's unused (`AudioEncoder` downloads its own copy from the HF hub at
-runtime) and safe to skip with `--exclude "wav2vec2-large-xlsr-53-english/*"`
-to save ~5 GB.
+runtime) and safe to skip, saving ~5 GB.
+
+The `diffusion_pytorch_model-0000*-of-00004.safetensors` shards (the DiT
+weights, ~28 GB) are also skippable: `core/dit_service.py` builds the DiT
+(`WanDiffusionWrapper`) with `skip_init_model=True`, which only reads
+`config.json` from `wan_models/Wan2.2-S2V-14B/` for the architecture — the
+actual weights are loaded from `model.pt` instead
+(`pipeline.generator.load_state_dict(state_dict["generator"])`). The
+`config.json`, `models_t5_umt5-xxl-enc-bf16.pth` (T5 text encoder) and
+`google/umt5-xxl/` (tokenizer) files are still required and are not excluded
+by the pattern above.
 
 Then set the checkpoint path in `config/config.py`:
 
@@ -125,7 +136,8 @@ A few gaps to watch for, depending on your Python/torch versions:
 
 ### 3. One-time local LLM/TTS setup
 
-Builds llama.cpp, downloads the Qwen2.5-7B GGUF, and creates `.venv_tts` with `qwen-tts`:
+Installs llama.cpp's prebuilt `llama` CLI, downloads the Qwen2.5-7B GGUF, and creates
+`.venv_tts` with `qwen-tts`:
 
 ```bash
 bash scripts/setup_local.sh

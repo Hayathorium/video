@@ -44,8 +44,8 @@ TTS_PORT=8091
 LLM_MODEL="models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
 
 # --- 1. llama.cpp LLM server (GPU 0) ---
-echo "Starting llama-server on :$LLM_PORT ..."
-CUDA_VISIBLE_DEVICES=0 llama.cpp/build/bin/llama-server \
+echo "Starting llama serve on :$LLM_PORT ..."
+CUDA_VISIBLE_DEVICES=0 "$HOME/.local/bin/llama" serve \
     -m "$LLM_MODEL" \
     --host 127.0.0.1 --port "$LLM_PORT" \
     -ngl 99 -c 4096 \
@@ -67,7 +67,7 @@ cleanup() {
 trap cleanup EXIT
 
 # --- wait for LLM ---
-echo -n "Waiting for llama-server"
+echo -n "Waiting for llama serve"
 for _ in $(seq 1 120); do
     if curl -sf "http://127.0.0.1:$LLM_PORT/health" >/dev/null 2>&1; then
         echo " ready."; break

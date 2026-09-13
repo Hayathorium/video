@@ -1,6 +1,6 @@
 #! /bin/bash
 # One-time setup for running RealVideo fully locally (no ZAI cloud API):
-#   - builds llama.cpp `llama-server` (LLM)
+#   - installs llama.cpp's prebuilt `llama` CLI (LLM server)
 #   - downloads Qwen2.5-7B-Instruct Q4_K_M GGUF
 #   - creates .venv_tts with torch (CUDA 12.x) + `qwen-tts` (Qwen3-TTS)
 #
@@ -10,21 +10,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-LLAMA_DIR="llama.cpp"
 MODEL_DIR="models"
 VENV=".venv_tts"
 GGUF_BASE="qwen2.5-7b-instruct-q4_k_m"
 GGUF_REPO="Qwen/Qwen2.5-7B-Instruct-GGUF"
 
-# 1. llama.cpp
-if [ ! -x "$LLAMA_DIR/build/bin/llama-server" ]; then
-    echo "==> Building llama.cpp (CUDA) ..."
-    if [ ! -d "$LLAMA_DIR" ]; then
-        git clone https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
-    fi
-    cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" \
-        -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
-    cmake --build "$LLAMA_DIR/build" --target llama-server -j "$(nproc)"
+# 1. llama.cpp (prebuilt binary via the official installer, no CUDA build needed)
+if [ ! -x "$HOME/.local/bin/llama" ]; then
+    echo "==> Installing llama.cpp (prebuilt CUDA binary) ..."
+    curl -LsSf https://llama.app/install.sh | sh
 fi
 
 # 2. GGUF model (Q4_K_M, split into 2 shards)
@@ -58,6 +52,6 @@ if ! command -v sox >/dev/null 2>&1; then
 fi
 
 echo "==> Setup complete."
-echo "    LLM server : $LLAMA_DIR/build/bin/llama-server"
+echo "    LLM server : llama serve"
 echo "    TTS server : $VENV/bin/python scripts/tts_server.py"
 echo "    Run        : bash scripts/run_local.sh"
