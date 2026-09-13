@@ -108,7 +108,7 @@ def get_closest_aspect_ratio(aspect_ratio):
     return target_ratios[closest_idx]
 
 
-def read_image(image_path, image_size=None, max_image_area=16384):
+def read_image(image_path, image_size=None, max_image_area=65536):
     image = Image.open(image_path).convert("RGB")
     img_W, img_H = image.size
     area = img_H * img_W
