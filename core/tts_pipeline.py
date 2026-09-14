@@ -11,6 +11,31 @@ from config.config import config as service_config
 
 logger = logging.getLogger(__name__)
 
+NO_EMOJI_INSTRUCTION = (
+    "Do not use emoji, emoticons, or other pictographic symbols in your "
+    "responses; reply in plain text only."
+)
+
+# Qwen3-TTS is given `language: "Auto"` and picks the spoken language per
+# input string; an emoji slipping through (LLMs add them despite the system
+# prompt) can confuse that detection and make it switch to an unrelated
+# language mid-sentence. Belt-and-suspenders: strip them before TTS regardless
+# of whether the LLM followed instructions.
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001f000-\U0001ffff"  # emoticons, symbols & pictographs, transport, supplemental, extended-A
+    "\U00002600-\U000027bf"  # misc symbols & dingbats
+    "\U00002300-\U000023ff"  # misc technical (e.g. watch/hourglass symbols used as emoji)
+    "\U0000fe0f"  # variation selector-16 (forces emoji presentation)
+    "\U0000200d"  # zero-width joiner (compound emoji)
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def strip_emoji(text: str) -> str:
+    return re.sub(r" {2,}", " ", _EMOJI_PATTERN.sub("", text))
+
 
 class TTSPipeline:
     def __init__(
@@ -84,8 +109,13 @@ class TTSPipeline:
                     voice_id = text_item.get("voice_id", None)
                     logger.info(f"LLM processing: {text_item}")
 
+                    system_prompt = (
+                        f"{profile}\n\n{NO_EMOJI_INSTRUCTION}"
+                        if profile
+                        else NO_EMOJI_INSTRUCTION
+                    )
                     body = {
-                        "messages": [{"role": "system", "content": profile}]
+                        "messages": [{"role": "system", "content": system_prompt}]
                         + self.chat_history
                         + [{"role": "user", "content": text_input}]
                     }
@@ -167,9 +197,9 @@ class TTSPipeline:
                                             if m.end() > self.stc_max_length:
                                                 pass
 
-                                            current_sentence = text_buffer[
-                                                : m.end()
-                                            ].strip()
+                                            current_sentence = strip_emoji(
+                                                text_buffer[: m.end()]
+                                            ).strip()
                                             text_buffer = text_buffer[m.end() :]
                                             if current_sentence:
                                                 await sentence_queue.put(
@@ -190,7 +220,7 @@ class TTSPipeline:
                                         else:
                                             break
 
-                    text_buffer = text_buffer.strip()
+                    text_buffer = strip_emoji(text_buffer).strip()
                     if text_buffer:
                         await sentence_queue.put(
                             {"sentence": text_buffer, "voice_id": voice_id}

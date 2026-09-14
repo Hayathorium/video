@@ -39,6 +39,11 @@ export NCCL_SOCKET_IFNAME=${MLP_SOCKET_IFNAME:-}
 export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 export TORCHINDUCTOR_CACHE_DIR=./.inductor_cache
 export TORCHDYNAMO_VERBOSE=1
+# Without this, current_start.item() in causal_model_s2v.py forces a graph
+# break on every block (torch.compile's own warning suggests this fix),
+# splitting the compiled model into separate fused regions with dispatch
+# overhead between them.
+export TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1
 export GPU_COUNT=$(get_gpu_count)
 
 # Single-node 2x H100 NVL: disable InfiniBand/PXN and use NVLink P2P only.

@@ -289,7 +289,6 @@
         let lastMessageTime = 0;
         let frameReceived = 0;
         let currentDisplayFrameNumber = 0;
-        let audioTimeoutDuration = 128 * 1000 / TARGET_FPS;
         let currentAudioStopFrameNumber = 0;
 
         const uploadArea = document.getElementById('uploadArea');
@@ -485,6 +484,16 @@
         }
 
         function connectWebSocket() {
+            // Create/resume the AudioContext inside this click handler so it
+            // starts in the "running" state (browsers require a user gesture
+            // to unsuspend audio) rather than lazily on the first chunk.
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().catch(() => {});
+            }
+
             const clientId = Math.floor(Math.random() * 1000);
             const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
             const wsUrl = `${wsProtocol}${window.location.host}/ws/${clientId}`;
@@ -714,87 +723,84 @@
             }
         }
 
+        // Each block's audio used to be played as its own <audio> element
+        // (new Audio(dataURI) + play(), awaited one at a time). Every element
+        // has real setup/decode latency (waiting for 'loadeddata', autoplay
+        // negotiation, etc.), so a gap opened up between the end of one short
+        // chunk and the start of the next — audible as choppiness. Decoding
+        // with the Web Audio API and scheduling playback on a single
+        // AudioContext instead removes that per-chunk overhead.
         async function playAudioSequentially(audioBase64) {
-            return new Promise((resolve) => {
-                console.log(`Playing audio sequentially, size: ${audioBase64.length}`);
+            console.log(`Playing audio sequentially, size: ${audioBase64.length}`);
 
-                if (currentAudio) {
-                    currentAudio.onended = null;
-                    currentAudio.onerror = null;
-                    currentAudio.onloadeddata = null;
-                    currentAudio.pause();
-                    currentAudio.src = '';
-                    currentAudio = null;
-                }
-
+            if (currentAudio) {
                 try {
-                    const audioSrc = `data:audio/wav;base64,${audioBase64}`;
-                    currentAudio = new Audio(audioSrc);
+                    currentAudio.onended = null;
+                    currentAudio.stop();
+                } catch (e) {
+                    // already stopped/ended
+                }
+                currentAudio = null;
+            }
 
-                    const loadTimeout = setTimeout(() => {
-                        console.warn('Audio loading timeout, skipping');
-                        cleanupAudio();
-                        resolve();
-                    }, 15000);
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContext.state === 'suspended') {
+                try {
+                    await audioContext.resume();
+                } catch (e) {
+                    // ignore; playback will just fail below
+                }
+            }
 
-                    currentAudio.onloadeddata = function() {
-                        clearTimeout(loadTimeout);
-                        console.log(`Audio loaded successfully, duration: ${currentAudio.duration}s`);
+            let audioBuffer;
+            try {
+                const binary = atob(audioBase64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+                audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
+            } catch (error) {
+                console.error('Error decoding audio chunk:', error);
+                return;
+            }
 
-                        const durationTimeout = setTimeout(() => {
-                            console.log('Audio playback completed by duration timeout');
-                            cleanupAudio();
-                            resolve();
-                        }, Math.min((currentAudio.duration || 10), audioTimeoutDuration) * 1000);
+            return new Promise((resolve) => {
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
 
-                        currentAudio._durationTimeout = durationTimeout;
-                    };
-
-                    currentAudio.onended = function() {
-                        cleanupAudio();
-                        console.log('Audio playback finished');
-                        resolve();
-                    };
-
-                    currentAudio.onerror = function(error) {
-                        cleanupAudio();
-                        console.error('Audio playback error:', error);
-                        resolve();
-                    };
-
-                    const playPromise = currentAudio.play();
-
-                    if (playPromise !== undefined) {
-                        playPromise.then(() => {
-                            console.log('Audio playback started successfully');
-                        }).catch(error => {
-                            console.warn('Audio play warning:', error);
-                            cleanupAudio();
-                            resolve();
-                        });
-                    }
-
-                } catch (error) {
-                    console.error('Error creating audio object:', error);
+                const safetyTimeout = setTimeout(() => {
+                    console.warn('Audio playback safety timeout, skipping');
                     cleanupAudio();
                     resolve();
-                }
+                }, (audioBuffer.duration || 10) * 1000 + 2000);
+
+                source.onended = function() {
+                    clearTimeout(safetyTimeout);
+                    if (currentAudio === source) {
+                        currentAudio = null;
+                    }
+                    console.log('Audio playback finished');
+                    resolve();
+                };
+
+                currentAudio = source;
+                console.log(`Audio decoded, duration: ${audioBuffer.duration}s`);
+                source.start();
             });
         }
 
         function cleanupAudio() {
             if (currentAudio) {
-                currentAudio.onended = null;
-                currentAudio.onerror = null;
-                currentAudio.onloadeddata = null;
-
-                if (currentAudio._durationTimeout) {
-                    clearTimeout(currentAudio._durationTimeout);
-                    currentAudio._durationTimeout = null;
+                try {
+                    currentAudio.onended = null;
+                    currentAudio.stop();
+                } catch (e) {
+                    // already stopped/ended
                 }
-
-                currentAudio.pause();
-                currentAudio.src = '';
                 currentAudio = null;
             }
         }
@@ -958,15 +964,15 @@
         });
 
         document.addEventListener('visibilitychange', function() {
+            // currentAudio is now an AudioBufferSourceNode (no pause/play);
+            // suspend/resume the whole context on tab visibility instead.
+            if (!audioContext) {
+                return;
+            }
             if (document.hidden) {
-                if (currentAudio) {
-                    currentAudio.pause();
-                }
+                audioContext.suspend().catch(() => {});
             } else {
-                if (currentAudio && !isPlayingAudio) {
-                    currentAudio.play().catch(() => {
-                    });
-                }
+                audioContext.resume().catch(() => {});
             }
         });
 

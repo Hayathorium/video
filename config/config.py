@@ -75,7 +75,11 @@ class LipSyncConfig:
     audio_segment_length = 80
     s2v_video_refresh_interval = 20
     compile = True
-    profile = True
+    # Adds a torch.cuda.synchronize() + CUDA-event pair around every DiT
+    # block purely to log its timing; that forces a sync barrier each block
+    # and blocks any cross-block GPU stream overlap. Leave off outside of
+    # active latency debugging.
+    profile = False
     fp8_quantize = False
     no_refresh_inference = True
 
