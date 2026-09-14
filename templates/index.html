@@ -625,6 +625,15 @@
                 let message;
                 let messageType;
 
+                // Cut the avatar off locally right away rather than waiting
+                // for new frames to arrive — the server abandons whatever
+                // it was generating too (core/model_handler.py), but that
+                // takes a network round trip plus however far the DiT is
+                // into the current block.
+                audioQueue = [];
+                cleanupAudio();
+                isPlayingAudio = false;
+
                 message = {
                     type: 'text',
                     profile: profile,

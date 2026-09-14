@@ -69,15 +69,34 @@ class TTSPipeline:
         self.proxy = None
         self.llm_task = None
         self.tts_task = None
+        self.sentence_queue = None
+        # Bumped to barge in on whatever the LLM/TTS are currently streaming.
+        # llm_worker_async/tts_worker_async each snapshot this at the start
+        # of the turn they're working on and bail out early if it no longer
+        # matches — a counter rather than a shared clear/set flag, since the
+        # two workers finish their turns at different times and a flag one
+        # of them clears for its own new turn could race the other still
+        # checking it for the old one.
+        self.generation_id = 0
 
     def reset_status(self):
         self.chat_history = []
+
+    def interrupt(self):
+        self.generation_id += 1
+        if self.sentence_queue is not None:
+            while not self.sentence_queue.empty():
+                try:
+                    self.sentence_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
     def start_async_tasks(
         self, text_input_queue: asyncio.Queue, output_queue: asyncio.Queue
     ):
         if not self.async_tasks_started:
             sentence_queue = asyncio.Queue(32)
+            self.sentence_queue = sentence_queue
             self.llm_task = asyncio.create_task(
                 self.llm_worker_async(text_input_queue, sentence_queue)
             )
@@ -104,6 +123,7 @@ class TTSPipeline:
             while True:
                 try:
                     text_item = await text_input_queue.get()
+                    my_generation = self.generation_id
                     profile = text_item.get("profile", None)
                     text_input = text_item["text"]
                     voice_id = text_item.get("voice_id", None)
@@ -143,6 +163,12 @@ class TTSPipeline:
                         while True:
                             await asyncio.sleep(0)
                             await self.vae_idle_event.wait()
+                            if self.generation_id != my_generation:
+                                logger.info(
+                                    "LLM stream interrupted by new input, abandoning rest of: %s"
+                                    % text_input
+                                )
+                                break
                             chunk_resp = await response.content.readline()
 
                             buffer += chunk_resp
@@ -220,6 +246,13 @@ class TTSPipeline:
                                         else:
                                             break
 
+                    if self.generation_id != my_generation:
+                        # Drop the trailing partial buffer (a mid-sentence
+                        # cutoff isn't worth speaking) and don't remember the
+                        # abandoned reply as something the assistant actually
+                        # said.
+                        text_buffer = ""
+
                     text_buffer = strip_emoji(text_buffer).strip()
                     if text_buffer:
                         await sentence_queue.put(
@@ -228,9 +261,10 @@ class TTSPipeline:
                         text_response += text_buffer
 
                     await sentence_queue.put(None)
-                    self.chat_history.append(
-                        {"role": "assistant", "content": text_response}
-                    )
+                    if text_response:
+                        self.chat_history.append(
+                            {"role": "assistant", "content": text_response}
+                        )
 
                     await asyncio.sleep(0)
                     await self.vae_idle_event.wait()
@@ -250,6 +284,7 @@ class TTSPipeline:
             while True:
                 try:
                     sentence_item = await sentence_queue.get()
+                    my_generation = self.generation_id
                     if sentence_item is None:  # llm response finish
                         await output_queue.put(None)
                         continue
@@ -288,6 +323,12 @@ class TTSPipeline:
                         while True:
                             await asyncio.sleep(0)
                             await self.vae_idle_event.wait()
+                            if self.generation_id != my_generation:
+                                logger.info(
+                                    "TTS stream interrupted by new input, abandoning rest of: %s"
+                                    % sentence
+                                )
+                                break
                             pcm_chunk = await response.content.read(4096)
                             if not pcm_chunk:
                                 break

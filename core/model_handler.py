@@ -51,6 +51,17 @@ class ModelHandler:
             await ready_event.wait()
             logger.info("Audio processing task started")
 
+    async def interrupt_current_response(self):
+        """Barge in on whatever's currently being spoken/generated so a new
+        text message can start right away instead of queuing behind it."""
+        self.tts_pipeline.interrupt()
+        for stale_queue in (self.audio_chunk_queue, self.text_input_queue):
+            while not stale_queue.empty():
+                try:
+                    stale_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
     async def process_message(
         self,
         audio_base64: Optional[str] = None,
@@ -68,6 +79,7 @@ class ModelHandler:
 
         try:
             if text_content is not None:
+                await self.interrupt_current_response()
                 await self.text_input_queue.put(
                     {
                         "profile": profile_content,
