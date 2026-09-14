@@ -11,6 +11,26 @@ from self_forcing.utils import parallel_state as mpu
 logger = logging.getLogger(__name__)
 
 
+def dist_send(tensor, dst, group=None):
+    """torch.distributed.send that works with gloo (needs a CPU-resident
+    tensor; its TCP transport can't write directly from a CUDA pointer)."""
+    if torch.distributed.get_backend(group) == "gloo":
+        torch.distributed.send(tensor.cpu(), dst=dst, group=group)
+    else:
+        torch.distributed.send(tensor, dst=dst, group=group)
+
+
+def dist_recv(tensor, src, group=None):
+    """torch.distributed.recv counterpart to dist_send: fills `tensor`
+    in-place, staging through a CPU buffer first when using gloo."""
+    if torch.distributed.get_backend(group) == "gloo":
+        cpu_tensor = torch.empty_like(tensor, device="cpu")
+        torch.distributed.recv(cpu_tensor, src=src, group=group)
+        tensor.copy_(cpu_tensor)
+    else:
+        torch.distributed.recv(tensor, src=src, group=group)
+
+
 def launch_distributed_job(backend: str = "nccl"):
     print("backend:", backend)
     rank = int(os.environ["RANK"])
@@ -54,6 +74,11 @@ def send_dict(data, dst=None, profile=False):
     ]  # torch.Shape for Tensor, obj for others
     torch.distributed.send_object_list(key_shape_obj_list, dst=dst)
 
+    # gloo's TCP transport can't write directly from a CUDA pointer (it needs
+    # the tensor staged in host memory first) — used on single-GPU hosts,
+    # where NCCL refuses to put two ranks on the same physical device.
+    xfer_device = "cpu" if torch.distributed.get_backend() == "gloo" else "cuda"
+
     for key_shape_obj in key_shape_obj_list:
         key, shape_or_obj = key_shape_obj
         if (
@@ -61,7 +86,7 @@ def send_dict(data, dst=None, profile=False):
             and isinstance(shape_or_obj[0], torch.Size)
             and isinstance(shape_or_obj[1], torch.dtype)
         ):  # torch.Tensor
-            data[key] = data[key].to("cuda").contiguous()
+            data[key] = data[key].to(xfer_device).contiguous()
             torch.distributed.send(data[key], dst=dst)
 
         else:
@@ -90,6 +115,7 @@ def recv_dict(data=None, src=None, profile=False):
     key_shape_obj_list = [None] * num_keys[0]  # torch.Shape for Tensor, obj for others
     torch.distributed.recv_object_list(key_shape_obj_list, src=src)
 
+    is_gloo = torch.distributed.get_backend() == "gloo"
     for key_shape_obj in key_shape_obj_list:
         key, shape_or_obj = key_shape_obj
         if (
@@ -99,10 +125,12 @@ def recv_dict(data=None, src=None, profile=False):
         ):  # torch.Tensor
             data[key] = torch.empty(
                 shape_or_obj[0],
-                device=torch.cuda.current_device(),
+                device="cpu" if is_gloo else torch.cuda.current_device(),
                 dtype=shape_or_obj[1],
             )
             torch.distributed.recv(data[key], src=src)
+            if is_gloo:
+                data[key] = data[key].to("cuda")
 
         else:
             data[key] = shape_or_obj

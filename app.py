@@ -31,8 +31,12 @@ def main():
     sp_size = int(os.environ.get("WORLD_SIZE", 2)) - 1
     logger = logging.getLogger(__name__)
 
-    # Initialize distributed inference
-    launch_distributed_job()
+    # Initialize distributed inference. NCCL refuses to put two ranks on the
+    # same physical GPU ("Duplicate GPU detected") — a hard check in NCCL's
+    # own init code, not something a flag can disable — so the single-GPU
+    # degenerate setup (both ranks pinned to device 0) needs gloo instead.
+    backend = "gloo" if torch.cuda.device_count() <= 1 else "nccl"
+    launch_distributed_job(backend=backend)
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(resolve_local_device(local_rank))
 

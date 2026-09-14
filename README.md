@@ -45,27 +45,58 @@ The app process (rank 0: VAE/text/audio encoders, rank 1+: DiT sequence-parallel
 - `sox`/`libsox-dev` (installed automatically by `setup_local.sh`) for the local TTS server.
 - **flash-attn is required, not optional.** The TTS server prints "flash-attn
   is not installed, will only run the manual PyTorch version" and still
-  works without it, but the main DiT model
-  (`self_forcing/wan/modules/model.py`) calls `flash_attention()` with no
-  fallback path — without flash-attn installed, every real generation
-  request crashes silently inside the DiT worker process (the LLM and TTS
-  still respond, and the avatar stays on screen showing only the static
-  reference frame, but it never actually answers). Install it after step 2:
+  works without it, but the main DiT model's cross-attention
+  (`WanT2VCrossAttention.forward` in `self_forcing/wan/modules/model.py`,
+  used unconditionally by the causal S2V blocks in
+  `causal_model_s2v.py`) calls `flash_attention()` with no fallback path —
+  without flash-attn installed, every real generation request crashes
+  silently inside the DiT worker process (the LLM and TTS still respond,
+  and the avatar stays on screen showing only the static reference frame,
+  but it never actually answers).
+
+  **Prefer a prebuilt wheel over building from source** — `pip3 install
+  flash-attn` builds from source because PyPI only hosts the sdist, but the
+  project's own GitHub releases page ships prebuilt wheels for common
+  torch/CUDA/Python combos. Match one to your installed torch and skip the
+  ~20-40 min compile:
   ```bash
-  MAX_JOBS=4 TORCH_CUDA_ARCH_LIST="<your arch, e.g. 12.0 for Blackwell>" \
-      pip3 install flash-attn --no-build-isolation
+  source /venv/main/bin/activate   # or your project venv
+  TORCH_TAG=$(python3 -c "import torch; print('.'.join(torch.__version__.split('+')[0].split('.')[:2]))")
+  ABI=$(python3 -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')")
+  PYTAG=$(python3 -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+
+  curl -s https://api.github.com/repos/Dao-AILab/flash-attention/releases/latest \
+    | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+want = f'cu12torch${TORCH_TAG}cxx11abi${ABI}-${PYTAG}-${PYTAG}-linux_x86_64.whl'
+for a in d['assets']:
+    if want in a['name']:
+        print(a['name']); print(a['browser_download_url']); break
+" > /tmp/fa_asset.txt
+
+  NAME=$(sed -n 1p /tmp/fa_asset.txt); URL=$(sed -n 2p /tmp/fa_asset.txt)
+  [ -n "$NAME" ] && curl -L -o "$NAME" "$URL" && pip3 install "$NAME"
   ```
-  Building from source can take a while; restricting `TORCH_CUDA_ARCH_LIST`
-  to your actual GPU's compute capability (`python3 -c "import torch;
-  print(torch.cuda.get_device_capability(0))"`) cuts the build time a lot.
+  If nothing matches (the release matrix currently tops out around torch
+  2.9, so a bleeding-edge/unpinned torch install will usually miss it), pin
+  torch to a version the matrix covers instead — e.g. the `torch==2.7.1`
+  already pinned in `requirements.txt` — rather than falling back to a
+  source build; see the Blackwell note below for how to get that pinned
+  version with Blackwell support. Only build from source
+  (`MAX_JOBS=4 TORCH_CUDA_ARCH_LIST="<your arch, e.g. 12.0 for Blackwell>"
+  pip3 install flash-attn --no-build-isolation`) if no matching wheel
+  exists for your torch/CUDA/Python combo at all.
 - **On Blackwell GPUs (sm_120, e.g. RTX PRO 6000):** `requirements.txt`
   pins `torch==2.7.1`/`torchvision==0.22.1` with no CUDA-variant suffix,
   which resolves to a PyPI wheel that predates Blackwell support and fails
   at model-load time with `CUDA error: no kernel image is available for
   execution on the device`. Skip those two pins when installing
-  `requirements.txt` and instead install a Blackwell-capable build, e.g.:
+  `requirements.txt` and instead install a Blackwell-capable build from the
+  `cu128` index — **keep the same pinned versions** (rather than installing
+  unpinned/latest) so a prebuilt flash-attn wheel still matches, per above:
   ```bash
-  pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+  pip3 install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
   ```
   Do this for **both** the main environment and `.venv_tts` (created by
   `setup_local.sh`) — the script already installs an unpinned

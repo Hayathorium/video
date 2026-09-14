@@ -19,7 +19,7 @@ from PIL import Image
 
 from config.config import config as service_config
 from core import comm_utils
-from core.distributed import send_dict
+from core.distributed import dist_recv, send_dict
 from core.utils import encode_image_async, encode_image_to_base64, resolve_local_device
 from self_forcing.utils import parallel_state as mpu
 from self_forcing.utils.wan_wrapper import WanTextEncoder, WanVAEWrapper
@@ -608,7 +608,7 @@ class LipSyncManager:
                         "Rank %d: ready to receive output block" % mpu.get_rank()
                     )
 
-                    torch.distributed.recv(output_block, src=1)
+                    dist_recv(output_block, src=1)
                     logger.info(
                         f"Rank {mpu.get_rank()}: output block received, {output_block.shape}"
                     )

@@ -19,7 +19,7 @@ from einops import rearrange
 import self_forcing.utils.parallel_state as mpu
 from config.config import config as service_config
 from core import comm_utils
-from core.distributed import broadcast_dict, recv_dict
+from core.distributed import broadcast_dict, dist_send, recv_dict
 from self_forcing.utils.misc import set_seed
 from self_forcing.utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder
 
@@ -763,7 +763,7 @@ def main():
                 start = time.time()
                 logger.info(f"Rank {mpu.get_rank()}, ready signal received, sending.")
 
-                dist.send(output_block.to(torch.bfloat16), dst=0)
+                dist_send(output_block.to(torch.bfloat16), dst=0)
                 torch.cuda.synchronize()
                 logger.info(
                     "  - Rank %d, output block sent. Send time: %.3fms"
