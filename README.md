@@ -52,7 +52,7 @@ The app process (rank 0: VAE/text/audio encoders, rank 1+: DiT sequence-parallel
   still respond, and the avatar stays on screen showing only the static
   reference frame, but it never actually answers). Install it after step 2:
   ```bash
-  MAX_JOBS=$(nproc) TORCH_CUDA_ARCH_LIST="<your arch, e.g. 12.0 for Blackwell>" \
+  MAX_JOBS=4 TORCH_CUDA_ARCH_LIST="<your arch, e.g. 12.0 for Blackwell>" \
       pip3 install flash-attn --no-build-isolation
   ```
   Building from source can take a while; restricting `TORCH_CUDA_ARCH_LIST`
