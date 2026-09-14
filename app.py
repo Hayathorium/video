@@ -13,6 +13,7 @@ import logging
 from core.app_interface import main as interface_main
 from core.distributed import launch_distributed_job
 from core.dit_service import main as dit_main
+from core.utils import resolve_local_device
 from self_forcing.utils import parallel_state as mpu
 
 logging.basicConfig(
@@ -33,7 +34,7 @@ def main():
     # Initialize distributed inference
     launch_distributed_job()
     local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
+    torch.cuda.set_device(resolve_local_device(local_rank))
 
     torch.set_grad_enabled(False)
 

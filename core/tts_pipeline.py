@@ -28,6 +28,11 @@ class TTSPipeline:
         self.model_name_tts = model_name_tts or service_config.speech.tts_model
         self.tts_sample_rate = service_config.speech.tts_sample_rate
         self.tts_voices = service_config.speech.tts_voices
+        self.llm_api_key = service_config.speech.llm_api_key
+        if not self.llm_api_key:
+            logger.warning(
+                "GROQ_API_KEY is not set; requests to the Groq LLM endpoint will be rejected."
+            )
 
         self.stc_split_pattern = r"([。？！?!\n]”?|[.?!]\s?)"
         self.substc_split_pattern = "(，|, )"
@@ -58,8 +63,9 @@ class TTSPipeline:
             logger.info("LLM & TTS tasks created")
 
     async def llm_worker_async(self, text_input_queue: asyncio.Queue, sentence_queue):
-        # llama.cpp `llama-server` exposes an OpenAI-compatible /v1/chat/completions.
+        # Groq exposes an OpenAI-compatible /v1/chat/completions.
         llm_url = f"{self.llm_server_url}/chat/completions"
+        llm_headers = {"Authorization": f"Bearer {self.llm_api_key}"}
         body_template = {
             "model": self.model_name_llm,
             "max_tokens": 1024,
@@ -96,8 +102,9 @@ class TTSPipeline:
 
                     logger.info(f"Creating LLM stream response for input: {text_input}")
                     async with session.post(
-                        llm_url, json=body, proxy=self.proxy
+                        llm_url, json=body, headers=llm_headers, proxy=self.proxy
                     ) as response:
+                        response.raise_for_status()
                         logger.info(
                             "LLM stream response for input %s created, %.3fms elapsed"
                             % (text_input, 1000 * (time.time() - start))

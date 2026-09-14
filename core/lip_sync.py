@@ -20,7 +20,7 @@ from PIL import Image
 from config.config import config as service_config
 from core import comm_utils
 from core.distributed import send_dict
-from core.utils import encode_image_async, encode_image_to_base64
+from core.utils import encode_image_async, encode_image_to_base64, resolve_local_device
 from self_forcing.utils import parallel_state as mpu
 from self_forcing.utils.wan_wrapper import WanTextEncoder, WanVAEWrapper
 from self_forcing.wan.modules.audio_encoder import AudioEncoder
@@ -35,7 +35,7 @@ async def send_cond_worker_async(
     profile=False,
 ):
     local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
+    torch.cuda.set_device(resolve_local_device(local_rank))
     client_socket = None
     while True:
         try:
@@ -563,7 +563,7 @@ class LipSyncManager:
         self, signal_queue: asyncio.Queue, vae_idle_event: asyncio.Event
     ):
         local_rank = int(os.environ["LOCAL_RANK"])
-        torch.cuda.set_device(local_rank)
+        torch.cuda.set_device(resolve_local_device(local_rank))
 
         while True:
             try:

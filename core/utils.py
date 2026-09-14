@@ -9,6 +9,20 @@ import torch
 import torchaudio
 
 
+def resolve_local_device(local_rank: int) -> int:
+    """Map a torchrun LOCAL_RANK to a physical CUDA device index.
+
+    On multi-GPU hosts this is the identity mapping. On a single-GPU host the
+    service still runs two ranks (rank 0: VAE/interface, rank 1: DiT worker,
+    giving a degenerate sequence-parallel group of size 1) but both must be
+    pinned to the same, only, device rather than an out-of-range ordinal.
+    """
+    device_count = torch.cuda.device_count()
+    if device_count <= 1:
+        return 0
+    return local_rank % device_count
+
+
 def encode_image_to_base64(image: np.ndarray, quality: int = 85) -> str:
     """Encode image to base64"""
     try:

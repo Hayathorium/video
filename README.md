@@ -1,40 +1,48 @@
-# RealVideo — Local LLM + TTS
+# RealVideo — Groq LLM + Local TTS
 
 RealVideo is a WebSocket-based video calling system that takes text input, generates an audio
 response, and uses autoregressive diffusion to produce a real-time lip-synced video. The system is
 modular with a clean code structure.
 
-This fork replaces the cloud **ZAI API** (`GLM-4.5-AirX` + `GLM-TTS`) with **fully local** inference,
-so no API key is required:
+This fork replaces the original cloud **ZAI API** (`GLM-4.5-AirX` + `GLM-TTS`) with:
 
-- **LLM**: [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama` CLI (prebuilt binary,
-  installed via `https://llama.app/install.sh`), running `Qwen2.5-7B-Instruct` (GGUF) in
-  `llama serve` mode.
-- **TTS**: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (0.6B CustomVoice) served by the
-  [`qwen-tts`](https://pypi.org/project/qwen-tts/) package.
+- **LLM**: [Groq](https://console.groq.com/)'s OpenAI-compatible cloud API, running
+  `openai/gpt-oss-20b`. Offloading the LLM to Groq keeps it off the local GPU entirely, which is
+  what makes the single-GPU setup below possible. Requires a `GROQ_API_KEY`.
+- **TTS**: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (0.6B CustomVoice) served locally by the
+  [`qwen-tts`](https://pypi.org/project/qwen-tts/) package (no API key required).
 
 ## Architecture
 
-Three processes run together (orchestrated by `scripts/run_local.sh`):
+Two processes run together (orchestrated by `scripts/run_local.sh`):
 
 | Service | Tool | Port | Model |
 |---|---|---|---|
-| LLM | `llama serve` (OpenAI-compatible) | 8080 | `Qwen2.5-7B-Instruct` Q4_K_M GGUF |
+| LLM | Groq API (cloud, OpenAI-compatible) | — | `openai/gpt-oss-20b` |
 | TTS | `qwen-tts` FastAPI wrapper | 8091 | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` |
 | App | `torchrun app.py` (DiT + VAE) | 8003 | `Wan2.2-S2V-14B` |
 
-The app itself still uses two GPUs: one for the VAE service, the rest for parallel DiT inference.
-The LLM and TTS servers are pinned to GPU 0.
+The app process (rank 0: VAE/text/audio encoders, rank 1+: DiT sequence-parallel workers) runs on
+**one or more GPUs**:
+
+- **1 GPU**: `run_local.sh` starts `app.py` with 2 ranks (world size 2) both pinned to the same
+  device — a degenerate sequence-parallel group of size 1 for the DiT worker. This is the
+  minimum world size the architecture needs (rank 0 always does VAE/interface work, rank 1+ always
+  does DiT), so a single GPU runs both roles as separate processes sharing the one device rather
+  than one process per GPU. The TTS server also runs on that same GPU.
+- **2+ GPUs**: one rank per GPU — rank 0 for VAE, the rest sequence-parallel over the DiT. The TTS
+  server is pinned to GPU 0 alongside the VAE rank.
 
 ## Requirements
 
-- **2+ GPUs**, ≥80 GB each (e.g. H100 / H200, or Blackwell RTX PRO 6000), with NVLink.
+- **1+ GPU**, ≥80 GB (e.g. a Blackwell RTX PRO 6000, or an H100/H200). With 2+ GPUs and NVLink, the
+  DiT can be split across them with sequence parallelism for lower per-block latency (see
+  [Reference timing](#reference-timing)); a single GPU works but runs the DiT un-parallelized.
+- A [Groq API key](https://console.groq.com/keys) (`GROQ_API_KEY`) for the LLM.
 - Python 3.10–3.12, `pip3`.
 - CUDA driver (tested on 570.x/580.x, i.e. CUDA 12.8+).
 - A modern browser (WebSocket + Web Audio API).
-- `sox`/`libsox-dev` (installed automatically by `setup_local.sh`). `llama.cpp`
-  itself is installed as a prebuilt binary (step 3), so no `cmake`/`ninja-build`
-  or CUDA toolchain is needed for it.
+- `sox`/`libsox-dev` (installed automatically by `setup_local.sh`) for the local TTS server.
 - **flash-attn is required, not optional.** The TTS server prints "flash-attn
   is not installed, will only run the manual PyTorch version" and still
   works without it, but the main DiT model
@@ -134,10 +142,9 @@ A few gaps to watch for, depending on your Python/torch versions:
   pip3 install librosa aiohttp orjson
   ```
 
-### 3. One-time local LLM/TTS setup
+### 3. One-time local TTS setup
 
-Installs llama.cpp's prebuilt `llama` CLI, downloads the Qwen2.5-7B GGUF, and creates
-`.venv_tts` with `qwen-tts`:
+Creates `.venv_tts` with `qwen-tts`:
 
 ```bash
 bash scripts/setup_local.sh
@@ -145,17 +152,31 @@ bash scripts/setup_local.sh
 
 The `Qwen3-TTS-12Hz-0.6B-CustomVoice` model is downloaded automatically on first TTS serve.
 
-### 4. Start the service
+### 4. Set your Groq API key
+
+Get a key from [console.groq.com/keys](https://console.groq.com/keys), then either export it or
+drop it in a `.env` file in the repo root (both are picked up by `run_local.sh`; `.env` is
+git-ignored):
+
+```bash
+echo 'GROQ_API_KEY=gsk_...' >> .env
+```
+
+### 5. Start the service
 
 ```bash
 bash scripts/run_local.sh
 ```
 
-This launches the LLM server (port 8080), the TTS server (port 8091), waits for both to become
-healthy, then starts the app on port 8003. To select specific GPUs, prefix with
-`CUDA_VISIBLE_DEVICES=0,1`.
+This starts the local TTS server (port 8091), waits for it to become healthy, then starts the app
+on port 8003. The LLM runs remotely on Groq, so there's nothing to launch or wait on for it.
 
-### 5. Access the application
+On a single GPU, `app.py` runs with 2 ranks sharing that one device (see
+[Architecture](#architecture)); this is automatic — `run_local.sh` detects the GPU count and picks
+the right `torchrun --nproc_per_node`. On 2+ GPUs, prefix with `CUDA_VISIBLE_DEVICES=0,1` to select
+specific ones.
+
+### 6. Access the application
 
 Open **http://localhost:8003**.
 
@@ -203,12 +224,14 @@ enabled.
   `text`/`audio` message, otherwise the DiT never starts generating.
 - `scripts/ws_test.py` is a headless smoke-test client that exercises the full
   text → LLM → TTS → lip-sync pipeline.
+- `GROQ_API_KEY` must be set (env var or `.env`) before starting the service; `run_local.sh` exits
+  immediately with a reminder if it isn't.
 
 ## Acknowledgements
 
 This project utilizes the following open-source libraries and models:
 
-- [llama.cpp](https://github.com/ggml-org/llama.cpp)
+- [Groq](https://groq.com/) (`openai/gpt-oss-20b`)
 - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) / [`qwen-tts`](https://pypi.org/project/qwen-tts/)
 - [self forcing](https://github.com/guandeh17/Self-Forcing)
 - [Wan2.2-S2V](https://github.com/Wan-Video/Wan2.2)

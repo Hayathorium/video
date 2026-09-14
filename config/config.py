@@ -34,9 +34,10 @@ class ServerConfig:
 
 @dataclass
 class LocalSpeechConfig:
-    # llama.cpp `llama-server` (OpenAI-compatible) — local LLM
-    llm_server_url: str = "http://127.0.0.1:8080/v1"
-    llm_model: str = "qwen2.5-7b-instruct"
+    # Groq (OpenAI-compatible) — cloud LLM, keeps the local GPU free for the DiT/VAE.
+    llm_server_url: str = "https://api.groq.com/openai/v1"
+    llm_model: str = "openai/gpt-oss-20b"
+    llm_api_key: str = ""
 
     # vLLM-Omni `vllm serve ... --omni` (OpenAI /v1/audio/speech) — local Qwen3-TTS
     tts_server_url: str = "http://127.0.0.1:8091/v1"
@@ -94,14 +95,14 @@ class Config:
         self._load_from_env()
 
     def _load_from_env(self):
-        self.api_key = os.getenv("ZHIPUAI_API_KEY")
         self.log_level = os.getenv("LOG_LEVEL", "DEBUG")
 
-        # Local LLM/TTS (llama.cpp + Qwen3-TTS) overrides
+        # LLM (Groq cloud API) + TTS (local Qwen3-TTS) overrides
         self.speech.llm_server_url = os.getenv(
             "LLM_SERVER_URL", self.speech.llm_server_url
         )
         self.speech.llm_model = os.getenv("LLM_MODEL", self.speech.llm_model)
+        self.speech.llm_api_key = os.getenv("GROQ_API_KEY", self.speech.llm_api_key)
         self.speech.tts_server_url = os.getenv(
             "TTS_SERVER_URL", self.speech.tts_server_url
         )

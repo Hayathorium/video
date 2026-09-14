@@ -5,6 +5,7 @@ from datetime import timedelta
 import torch
 import torch.distributed as dist
 
+from core.utils import resolve_local_device
 from self_forcing.utils import parallel_state as mpu
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def launch_distributed_job(backend: str = "nccl"):
         timeout=timedelta(minutes=60),
     )
     mpu.initialize_parallel_states()
-    torch.cuda.set_device(local_rank)
+    torch.cuda.set_device(resolve_local_device(local_rank))
 
 
 def send_dict(data, dst=None, profile=False):

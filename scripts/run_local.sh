@@ -1,9 +1,24 @@
 #! /bin/bash
-# Launch RealVideo fully locally: llama.cpp LLM (8080) + Qwen3-TTS (8091) + app.
+# Launch RealVideo: Groq cloud LLM + local Qwen3-TTS (8091) + app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p logs
+
+# Pick up GROQ_API_KEY (and any other overrides) from a .env file in the repo
+# root, if present, without clobbering already-exported values.
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+if [ -z "${GROQ_API_KEY:-}" ]; then
+    echo "GROQ_API_KEY is not set. Get a key at https://console.groq.com/keys and export it:" >&2
+    echo "    export GROQ_API_KEY=gsk_..." >&2
+    exit 1
+fi
 
 function get_gpu_count() {
     if [ -z "${CUDA_VISIBLE_DEVICES+x}" ]; then
@@ -39,20 +54,24 @@ export NCCL_DEBUG=VERSION
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:512"
 
-LLM_PORT=8080
 TTS_PORT=8091
-LLM_MODEL="models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
 
-# --- 1. llama.cpp LLM server (GPU 0) ---
-echo "Starting llama serve on :$LLM_PORT ..."
-CUDA_VISIBLE_DEVICES=0 "$HOME/.local/bin/llama" serve \
-    -m "$LLM_MODEL" \
-    --host 127.0.0.1 --port "$LLM_PORT" \
-    -ngl 99 -c 4096 \
-    > logs/llama.log 2>&1 &
-LLAMA_PID=$!
+# The service needs at least 2 ranks (rank 0: VAE/interface, rank 1+: DiT
+# worker(s), sequence-parallel over the DiT ranks). On a single GPU, run the
+# minimum of 2 ranks sharing that one device (a degenerate sequence-parallel
+# group of size 1 for the DiT worker) instead of the process-per-GPU mapping.
+if [ "$GPU_COUNT" -le 1 ]; then
+    NPROC_PER_NODE=2
+    # Two ranks on the same physical device: force the NCCL IPC/SHM path
+    # instead of the (inter-device) P2P path.
+    export NCCL_P2P_DISABLE=1
+    echo "Only $GPU_COUNT GPU visible: running the app rank and the DiT worker" \
+        "on the same device (world size 2, DiT sequence-parallel size 1)."
+else
+    NPROC_PER_NODE=$GPU_COUNT
+fi
 
-# --- 2. Qwen3-TTS server (GPU 0) ---
+# --- Qwen3-TTS server (local, GPU 0) ---
 echo "Starting Qwen3-TTS server on :$TTS_PORT ..."
 CUDA_VISIBLE_DEVICES=0 .venv_tts/bin/python scripts/tts_server.py \
     --host 127.0.0.1 --port "$TTS_PORT" \
@@ -61,19 +80,10 @@ TTS_PID=$!
 
 cleanup() {
     echo "Shutting down local services ..."
-    kill "$LLAMA_PID" "$TTS_PID" 2>/dev/null || true
-    wait "$LLAMA_PID" "$TTS_PID" 2>/dev/null || true
+    kill "$TTS_PID" 2>/dev/null || true
+    wait "$TTS_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
-
-# --- wait for LLM ---
-echo -n "Waiting for llama serve"
-for _ in $(seq 1 120); do
-    if curl -sf "http://127.0.0.1:$LLM_PORT/health" >/dev/null 2>&1; then
-        echo " ready."; break
-    fi
-    echo -n "."; sleep 1
-done
 
 # --- wait for TTS (first run downloads the model; be patient) ---
 echo -n "Waiting for Qwen3-TTS"
@@ -84,5 +94,5 @@ for _ in $(seq 1 1800); do
     echo -n "."; sleep 1
 done
 
-echo "Starting RealVideo app on $GPU_COUNT GPUs ..."
-torchrun --standalone --nproc_per_node="$GPU_COUNT" app.py
+echo "Starting RealVideo app ($NPROC_PER_NODE ranks, $GPU_COUNT GPU(s)) ..."
+torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" app.py
