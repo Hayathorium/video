@@ -101,6 +101,9 @@ class Config:
     def _load_from_env(self):
         self.log_level = os.getenv("LOG_LEVEL", "DEBUG")
 
+        self.server.host = os.getenv("APP_HOST", self.server.host)
+        self.server.port = int(os.getenv("APP_PORT", self.server.port))
+
         # LLM (Groq cloud API) + TTS (local Qwen3-TTS) overrides
         self.speech.llm_server_url = os.getenv(
             "LLM_SERVER_URL", self.speech.llm_server_url
