@@ -97,10 +97,6 @@ pip3 install -r requirements.txt
 pip3 install librosa aiohttp orjson torchaudio==2.7.1  # imported but missing from requirements.txt
 ```
 
-On Python 3.12, `numpy==1.24.4` (pinned) won't build — use `numpy>=1.26` instead. If numpy ends up
-at 2.x (e.g. pulled in by `librosa`), also upgrade `opencv-python` past `4.8.0.74`, which predates
-the numpy 2 ABI.
-
 ### 3. One-time local TTS setup
 
 ```bash
